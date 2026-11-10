@@ -7,7 +7,7 @@ export function parseFit(buffer:ArrayBuffer){
  if(b.length<16)throw Error('FIT file too short');
  const header=b[0],dataSize=v.getUint32(4,true),end=header+dataSize;
  if(header<12||end+2>b.length||String.fromCharCode(...b.slice(8,12))!=='.FIT')throw Error('Invalid FIT header');
- const defs=new Map<number,Def>();let p=header;let session:Record<number,number>={};
+ const defs=new Map<number,Def>();let p=header;let session:Record<number,number>={};const laps:Record<number,number>[]=[];
  function numberAt(offset:number,size:number,base:number,little:boolean):number|undefined{
   const t=base&31;if(size===0)return undefined;
   if(size===1){const n=b[offset];return n===255?undefined:n}
@@ -26,12 +26,20 @@ export function parseFit(buffer:ArrayBuffer){
   }
   const d=defs.get(local);if(!d)throw Error('Missing FIT definition');
   const vals:Record<number,number>={};
-  for(const f of d.fields){if(p+f.size>end)throw Error('Truncated FIT data');if(d.global===18){const n=numberAt(p,f.size,f.base,d.little);if(n!==undefined)vals[f.num]=n}p+=f.size}
+  for(const f of d.fields){if(p+f.size>end)throw Error('Truncated FIT data');if(d.global===18||d.global===19){const n=numberAt(p,f.size,f.base,d.little);if(n!==undefined)vals[f.num]=n}p+=f.size}
   if(p+d.devSize>end)throw Error('Truncated developer data');p+=d.devSize;
-  if(d.global===18)session=vals;
+  if(d.global===18)session=vals; if(d.global===19)laps.push(vals);
  }
  const distance=(session[9]??0)/100, duration=Math.round((session[8]??session[7]??0)/1000);
  const timestamp=session[2]??session[253];
  if(distance<=0||duration<=0||timestamp===undefined)throw Error('No valid session distance, duration or start time in FIT');
  return {distance_m:distance,duration_s:duration,started_at:new Date(EPOCH+timestamp*1000).toISOString(),avg_hr:session[16]??null,elevation_gain_m:session[22]??null};
+}
+
+export function parseFitLaps(buffer:ArrayBuffer){
+ const v=new DataView(buffer),b=new Uint8Array(buffer);if(b.length<16)throw Error('FIT file too short');const header=b[0],end=header+v.getUint32(4,true);if(header<12||end+2>b.length||String.fromCharCode(...b.slice(8,12))!=='.FIT')throw Error('Invalid FIT header');
+ const defs=new Map<number,{global:number;little:boolean;fields:{num:number;size:number;base:number}[];devSize:number}>();const laps:Record<number,number>[]=[];let p=header;
+ while(p<end){const h=b[p++],compressed=!!(h&128),local=compressed?(h>>5)&3:h&15;if(!compressed&&(h&64)){if(p+5>end)throw Error('Invalid FIT definition');p++;const little=b[p++]===0,global=v.getUint16(p,little);p+=2;const count=b[p++],fields=[];for(let i=0;i<count;i++){if(p+3>end)throw Error('Invalid FIT field');fields.push({num:b[p],size:b[p+1],base:b[p+2]});p+=3}let devSize=0;if(h&32){if(p>=end)throw Error('Invalid FIT developer fields');devSize=b[p++]*3;p+=devSize}if(p>end)throw Error('Invalid FIT definition');defs.set(local,{global,little,fields,devSize});continue}
+ const d=defs.get(local);if(!d)throw Error('FIT definition missing');const vals:Record<number,number>={};for(const f of d.fields){if(p+f.size>end)throw Error('Invalid FIT record');if(d.global===19&&[2,7,8,9,13,15,16,17,18,19,21,22,25,42,43].includes(f.num)){const base=f.base&31;let n:number|undefined;if(f.size===1)n=b[p];else if(f.size===2)n=base===0x83?v.getInt16(p,d.little):v.getUint16(p,d.little);else if(f.size===4)n=base===0x85?v.getFloat32(p,d.little):v.getUint32(p,d.little);if(n!==undefined&&Number.isFinite(n)&&n!==255&&n!==65535&&n!==32767&&n!==4294967295)vals[f.num]=n}p+=f.size}p+=d.devSize;if(p>end)throw Error('Invalid FIT developer record');if(d.global===19)laps.push(vals)}
+ return laps.map((l,i)=>({lap_index:i+1,start_time:l[2]!==undefined?new Date(631065600000+l[2]*1000).toISOString():null,distance_m:l[9]!==undefined?l[9]/100:null,duration_s:l[8]!==undefined?l[8]/1000:l[7]!==undefined?l[7]/1000:null,avg_hr:l[15]??null,max_hr:l[16]??null,avg_cadence:l[17]??null,avg_power:l[19]??null,elevation_gain_m:l[21]!==undefined?l[21]:null}));
 }
