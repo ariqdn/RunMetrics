@@ -25,7 +25,7 @@ export async function POST(req:NextRequest){
   token=token.replace(/^"|"$/g,'');
   if(!token)return NextResponse.json({error:'Garmin token missing'},{status:502});
   const res=await fetch(BASE+'/activity-service/activity/'+activity.source_activity_id+'/splits',{headers:{Authorization:'Bearer '+token},cache:'no-store',signal:AbortSignal.timeout(20000)});
-  if(!res.ok)return NextResponse.json({error:'Garmin splits unavailable',status:res.status},{status:502});
+  if(!res.ok)return NextResponse.json({error:'Garmin splits endpoint returned HTTP '+res.status+(res.status===404?' (activity splits not found or endpoint unsupported)':res.status===403?' (access denied by Garmin)':''),garminStatus:res.status},{status:502});
   const json=await res.json() as {lapDTOs?:Lap[];lapDTO?:Lap[];splits?:Lap[]}|Lap[];
   const laps=Array.isArray(json)?json:Array.isArray(json.lapDTOs)?json.lapDTOs:Array.isArray(json.lapDTO)?json.lapDTO:Array.isArray(json.splits)?json.splits:[];
   if(!laps.length)return NextResponse.json({error:'No lap records returned by Garmin',keys:Array.isArray(json)?[]:Object.keys(json).slice(0,12)},{status:422});
