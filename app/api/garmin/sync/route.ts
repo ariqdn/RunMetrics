@@ -17,8 +17,13 @@ export async function POST(req:NextRequest){
   if(!key)return NextResponse.json({error:'Garmin API key is not configured'},{status:503});
   const tokenResponse=await fetch(BASE+'/personalapitoken-service/personal-api/personal-api-key/token',{method:'POST',headers:{Authorization:'ApiKey '+key},cache:'no-store',signal:AbortSignal.timeout(15000)});
   if(!tokenResponse.ok)return NextResponse.json({error:'Garmin token request failed',status:tokenResponse.status},{status:502});
-  const tokenBody=await tokenResponse.json() as {access_token?:string;accessToken?:string};
-  const token=tokenBody.access_token||tokenBody.accessToken;
+  const tokenText=(await tokenResponse.text()).trim();
+  let token=tokenText;
+  if(tokenText.startsWith('{')){
+   const tokenBody=JSON.parse(tokenText) as {access_token?:string;accessToken?:string;token?:string};
+   token=tokenBody.access_token||tokenBody.accessToken||tokenBody.token||'';
+  }
+  token=token.replace(/^\"|\"$/g,'');
   if(!token)return NextResponse.json({error:'Garmin did not return an access token'},{status:502});
   const body=await req.json().catch(()=>({})) as {start?:number;limit?:number};
   const start=Math.max(0,Math.min(10000,Math.floor(Number(body.start)||0)));
