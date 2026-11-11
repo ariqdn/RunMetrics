@@ -41,21 +41,28 @@ export default function Home(){
   const file=e.target.files?.[0];if(!file||!db||!user)return;
   setBusy(true);setFitError('');setNotice('');
   try{
-   if(!file.name.toLowerCase().endsWith('.fit'))throw Error('Select a .fit file');
-   if(file.size>30*1024*1024)throw Error('FIT file must be under 30 MB');
-   const buffer=await file.arrayBuffer(), parsed=parseFit(buffer), importedLaps=parseFitLaps(buffer);
+   const isFit=file.name.toLowerCase().endsWith('.fit'),isTcx=file.name.toLowerCase().endsWith('.tcx');
+   if(!isFit&&!isTcx)throw Error('Select a .fit or .tcx file');
+   if(file.size>30*1024*1024)throw Error('Activity file must be under 30 MB');
+   const buffer=await file.arrayBuffer();
    const hash=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',buffer))).map(x=>x.toString(16).padStart(2,'0')).join('');
-   const {data,error:err}=await db.from('activities').insert({...parsed,user_id:user.id,name:file.name.replace(/\.fit$/i,''),source:'fit',source_activity_id:hash}).select('id,started_at,name,distance_m,duration_s,avg_hr,elevation_gain_m,source,source_activity_id').single();
-   if(err)throw Error(err.code==='23505'?'This FIT activity was already imported':err.message);
-   if(data){
-    setRuns(prev=>[data as Activity,...prev]);
-    if(importedLaps.length){
-     const {error:lapErr}=await db.from('activity_laps').upsert(importedLaps.map(l=>({...l,activity_id:data.id,user_id:user.id})),{onConflict:'activity_id,lap_index'});
-     if(lapErr)setNotice('Activity imported, but splits could not be saved: '+lapErr.message);
-     else setNotice('FIT imported with '+importedLaps.length+' laps. Open the activity to view splits.');
-    }else setNotice('FIT imported. This file contains no lap records.');
+   const parsed=isFit?parseFit(buffer):parseTcx(new TextDecoder().decode(buffer));
+   const importedLaps=isFit?parseFitLaps(buffer):parseTcx(new TextDecoder().decode(buffer)).laps;
+   if(!parsed.started_at||parsed.distance_m<=0||parsed.duration_s<=0)throw Error('Activity is missing a valid start time, distance or duration');
+   const startedAt=new Date(parsed.started_at).getTime();
+   const {data:nearby,error:lookupError}=await db.from('activities').select('id,started_at,distance_m,source').eq('user_id',user.id).gte('started_at',new Date(startedAt-10*60*1000).toISOString()).lte('started_at',new Date(startedAt+10*60*1000).toISOString());
+   if(lookupError)throw Error('Cannot check existing activities: '+lookupError.message);
+   const match=(nearby||[]).find(r=>Math.abs(new Date(r.started_at).getTime()-startedAt)<=10*60*1000&&Math.abs(r.distance_m-parsed.distance_m)/Math.max(1,r.distance_m)<=0.05);
+   if(match){
+    if(!importedLaps.length){setNotice('This activity already exists. No lap records found in the file.');return}
+    const {error:lapErr}=await db.from('activity_laps').upsert(importedLaps.map(l=>({...l,activity_id:match.id,user_id:user.id})),{onConflict:'activity_id,lap_index'});
+    if(lapErr)throw Error('Cannot attach laps: '+lapErr.message);
+    setNotice('Existing activity matched: '+importedLaps.length+' laps attached. No duplicate created.');return;
    }
-  }catch(ex){setFitError(ex instanceof Error?ex.message:'FIT import failed')}finally{setBusy(false);e.target.value=''}
+   const {data,error:err}=await db.from('activities').insert({user_id:user.id,name:file.name.replace(/\.(fit|tcx)$/i,''),started_at:parsed.started_at,distance_m:parsed.distance_m,duration_s:Math.round(parsed.duration_s),avg_hr:isFit?(parsed as ReturnType<typeof parseFit>).avg_hr:null,elevation_gain_m:isFit?(parsed as ReturnType<typeof parseFit>).elevation_gain_m:null,source:isFit?'fit':'tcx',source_activity_id:hash}).select('id,started_at,name,distance_m,duration_s,avg_hr,elevation_gain_m,source,source_activity_id').single();
+   if(err)throw Error(err.code==='23505'?'This activity file was already imported':err.message);
+   if(data){setRuns(prev=>[data as Activity,...prev]);if(importedLaps.length){const {error:lapErr}=await db.from('activity_laps').upsert(importedLaps.map(l=>({...l,activity_id:data.id,user_id:user.id})),{onConflict:'activity_id,lap_index'});if(lapErr)setNotice('Activity imported, but laps could not be saved: '+lapErr.message);else setNotice('Activity imported with '+importedLaps.length+' laps.')}else setNotice('Activity imported. No lap records found.')}
+  }catch(ex){setFitError(ex instanceof Error?ex.message:'Activity import failed')}finally{setBusy(false);e.target.value=''}
  }
  async function saveLthr(){if(!db||!user)return;setError('');const {error:err}=await db.from('training_profiles').upsert({user_id:user.id,lthr,updated_at:new Date().toISOString()});if(err)setError(err.message)}
  async function openRun(r:Activity){setSelectedRun(r);setLaps([]);setLapError('');if(!db)return;const {data,error}=await db.from('activity_laps').select('lap_index,distance_m,duration_s,avg_hr,max_hr,avg_cadence,avg_power,elevation_gain_m').eq('activity_id',r.id).order('lap_index');if(error)setLapError(error.message);else setLaps((data||[]) as Lap[])}
@@ -81,7 +88,7 @@ export default function Home(){
  <><section className="top"><h1>Road to JRF 2027</h1><p className="muted">Full Marathon · Goal 3:45:00 · Target pace 5:20/km</p></section>
  <div className="grid"><div className="card"><div className="muted">Recorded distance</div><div className="number">{(total/1000).toFixed(1)} km</div></div><div className="card"><div className="muted">Activities</div><div className="number">{runs.length}</div></div><div className="card"><div className="muted">Average pace</div><div className="number">{pace(seconds,total)}</div></div><div className="card"><div className="muted">LTHR reference</div><div className="number">{lthr} bpm</div></div></div>
  <section className="card top"><h2>Garmin Connect Sync</h2><p className="hint">Secure server-side Garmin Personal API connection. Import the 50 most recent activities; duplicates are skipped.</p><button disabled={busy} onClick={syncGarmin}>{busy?'Syncing…':'Sync Garmin history'}</button>{syncNotice&&<p className="success" role="status">{syncNotice}</p>}{syncError&&<p className="error" role="alert">{syncError}</p>}</section>
- <section className="card top"><h2>Import Garmin FIT</h2><p className="hint">Upload a Garmin .fit activity (up to 30 MB). The file is parsed in your browser; session summary is saved to Supabase. Duplicate file imports are blocked. Original FIT files are not yet archived.</p><label>FIT activity file<input type="file" accept=".fit" disabled={busy} onChange={importFit}/></label>{busy&&<p className="muted">Processing…</p>}{notice&&<p className="success" role="status">{notice}</p>}{fitError&&<p className="error" role="alert">{fitError}</p>}</section>
+ <section className="card top"><h2>Import Garmin FIT / TCX</h2><p className="hint">Upload a Garmin .fit or .tcx activity (up to 30 MB). The file is parsed in your browser; session summary is saved to Supabase. Duplicate file imports are blocked. Original FIT files are not yet archived.</p><label>FIT / TCX activity file<input type="file" accept=".fit,.tcx" disabled={busy} onChange={importFit}/></label>{busy&&<p className="muted">Processing…</p>}{notice&&<p className="success" role="status">{notice}</p>}{fitError&&<p className="error" role="alert">{fitError}</p>}</section>
  <section className="card top"><h2>Add a run</h2><p className="hint">Manual entry, FIT session and lap import are available. Strava sync is planned; Garmin sync requires configured API access.</p><form className="form" onSubmit={add}><label>Activity<input required value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/></label><label>Date<input type="date" required value={form.date} onChange={e=>setForm({...form,date:e.target.value})}/></label><label>Distance (km)<input type="number" min=".01" step=".01" required value={form.distance} onChange={e=>setForm({...form,distance:e.target.value})}/></label><label>Duration (minutes)<input type="number" min=".1" step=".1" required value={form.duration} onChange={e=>setForm({...form,duration:e.target.value})}/></label><label>Average HR<input type="number" min="30" max="240" value={form.hr} onChange={e=>setForm({...form,hr:e.target.value})}/></label><button disabled={busy}>Save activity</button></form>{error&&<p className="error">{error}</p>}</section>
  <section className="card top"><h2>Activities</h2>{runs.length===0?<p className="muted">No activities yet. Add your first run above.</p>:<div style={{overflowX:'auto'}}><table className="table"><thead><tr><th>Date</th><th>Activity</th><th>Distance</th><th>Time</th><th>Pace</th><th>HR</th></tr></thead><tbody>{visibleRuns.map(r=><tr key={r.id}><td>{new Date(r.started_at).toLocaleDateString('id-ID')}</td><td><button type="button" onClick={()=>openRun(r)} style={{textAlign:'left',textDecoration:'underline',background:'none',border:0,color:'inherit',cursor:'pointer',padding:0}}>{r.name}</button></td><td>{(r.distance_m/1000).toFixed(2)} km</td><td>{fmt(r.duration_s)}</td><td>{pace(r.duration_s,r.distance_m)}</td><td>{r.avg_hr||'—'}</td></tr>)}</tbody></table><div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:12,marginTop:16,flexWrap:'wrap'}}><span className="muted">Showing {(currentPage-1)*pageSize+1}–{Math.min(currentPage*pageSize,runs.length)} of {runs.length} activities</span><div style={{display:'flex',alignItems:'center',gap:10}}><button type="button" disabled={currentPage===1} onClick={()=>setActivityPage(currentPage-1)}>Previous</button><span>Page {currentPage} / {totalPages}</span><button type="button" disabled={currentPage===totalPages} onClick={()=>setActivityPage(currentPage+1)}>Next</button></div></div></div>}</section>
  {selectedRun&&<section className="card top" id="activity-detail" aria-label="Activity details">
