@@ -15,10 +15,11 @@ export function parseTcx(text:string){
  const laps:ImportedLap[]=lapNodes.map((lap,i)=>{
   const hr=children(lap,'AverageHeartRateBpm'),max=children(lap,'MaximumHeartRateBpm');
   const cadence=number(value(lap,'Cadence'));
-  const extension=descendants(lap,'AvgRunCadence')[0]||descendants(lap,'AvgCadence')[0];
+  const runCadence=descendants(lap,'AvgRunCadence')[0];
+  const extension=runCadence||descendants(lap,'AvgCadence')[0];
   const power=descendants(lap,'AvgWatts')[0];
   const distance=number(value(lap,'DistanceMeters')),duration=number(value(lap,'TotalTimeSeconds'));
-  return {lap_index:i+1,start_time:lap.getAttribute('StartTime')||null,distance_m:distance,duration_s:duration,avg_hr:hr?number(value(hr,'Value')):null,max_hr:max?number(value(max,'Value')):null,avg_cadence:extension?number(extension.textContent?.trim()||''):cadence,avg_power:power?number(power.textContent?.trim()||''):null,elevation_gain_m:null};
+  return {lap_index:i+1,start_time:lap.getAttribute('StartTime')||null,distance_m:distance,duration_s:duration,avg_hr:hr?number(value(hr,'Value')):null,max_hr:max?number(value(max,'Value')):null,avg_cadence:extension?((n)=>n===null?null:runCadence?n*2:n)(number(extension.textContent?.trim()||'')):cadence,avg_power:power?number(power.textContent?.trim()||''):null,elevation_gain_m:null};
  });
  const id=value(activity,'Id');
  const started_at=id&&Number.isFinite(Date.parse(id))?new Date(id).toISOString():laps[0].start_time;
