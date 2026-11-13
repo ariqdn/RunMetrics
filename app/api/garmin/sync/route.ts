@@ -3,7 +3,7 @@ import {createClient} from '@supabase/supabase-js';
 export const runtime='nodejs';
 export const maxDuration=60;
 const BASE='https://personal.connectapi.garmin.com';
-type GarminActivity={activityId?:number;activityName?:string;startTimeGMT?:string;startTimeLocal?:string;distance?:number;duration?:number;averageHR?:number;totalElevationGain?:number;activityType?:{typeKey?:string}};
+type GarminActivity={activityId?:number;activityName?:string;startTimeGMT?:string;startTimeLocal?:string;distance?:number;duration?:number;averageHR?:number;totalElevationGain?:number;vO2MaxValue?:number;vo2MaxValue?:number;activityType?:{typeKey?:string}};
 export async function POST(req:NextRequest){
  try{
   const auth=req.headers.get('authorization')||'';
@@ -39,13 +39,17 @@ export async function POST(req:NextRequest){
    avg_hr:a.averageHR&&a.averageHR>0?Math.round(a.averageHR):null,
    elevation_gain_m:a.totalElevationGain??null
   }));
-  let imported=0,skipped=0;
+  let imported=0,skipped=0,vo2maxSaved=0;
+  // Only store VO2max when Garmin explicitly supplies a numeric value in the activity response.
+  // Activity summaries may omit this metric entirely; never infer it from pace or HR.
+  const vo2Readings=(list as GarminActivity[]).filter(a=>a.startTimeGMT&&a.activityType?.typeKey?.toLowerCase().includes('running')).map(a=>({date:a.startTimeGMT!.slice(0,10),value:a.vO2MaxValue??a.vo2MaxValue})).filter((v):v is {date:string;value:number}=>typeof v.value==='number'&&Number.isFinite(v.value)&&v.value>=15&&v.value<=95);
   for(const a of activities){
    const {error}=await supabase.from('activities').insert(a);
    if(error?.code==='23505')skipped++;
    else if(error)return NextResponse.json({error:'Database import failed: '+error.message,imported,skipped},{status:500});
    else imported++;
   }
-  return NextResponse.json({fetched:list.length,imported,skipped,nextStart:start+list.length,hasMore:list.length===limit});
+  for(const reading of vo2Readings){const {error}=await supabase.from('vo2max_readings').upsert({user_id:user.id,measured_on:reading.date,vo2max:reading.value,source:'garmin_auto'},{onConflict:'user_id,measured_on,source'});if(!error)vo2maxSaved++;}
+  return NextResponse.json({fetched:list.length,imported,skipped,vo2maxSaved,vo2maxAvailableInResponse:vo2Readings.length>0,nextStart:start+list.length,hasMore:list.length===limit});
  }catch(e){return NextResponse.json({error:e instanceof Error?e.message:'Garmin sync failed'},{status:500})}
 }
