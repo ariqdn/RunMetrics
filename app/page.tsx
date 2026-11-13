@@ -34,6 +34,7 @@ function LapChart({laps,metric}:{laps:Lap[];metric:Metric}){
 export default function Home(){
  const [user,setUser]=useState<User|null>(null),[ready,setReady]=useState(false),[email,setEmail]=useState(''),[password,setPassword]=useState(''),[recovery,setRecovery]=useState(false),[notice,setNotice]=useState(''),[syncNotice,setSyncNotice]=useState(''),[syncError,setSyncError]=useState(''),[sent,setSent]=useState(false),[error,setError]=useState(''),[busy,setBusy]=useState(false),[runs,setRuns]=useState<Activity[]>([]),[activityPage,setActivityPage]=useState(1),[lthr,setLthr]=useState(181),[selectedRun,setSelectedRun]=useState<Activity|null>(null),[laps,setLaps]=useState<Lap[]>([]),[lapError,setLapError]=useState(''),[lapBusy,setLapBusy]=useState(false),[chartMetric,setChartMetric]=useState<Metric>('pace');
  const [fitError,setFitError]=useState('');
+ const [vo2Refresh,setVo2Refresh]=useState(0);
  const [manualWorkout,setManualWorkout]=useState<WorkoutType|null>(null),[workoutSaving,setWorkoutSaving]=useState(false),[workoutError,setWorkoutError]=useState('');
  const [form,setForm]=useState({name:'Easy Run',date:new Date().toISOString().slice(0,10),distance:'5',duration:'30',hr:''});
  useEffect(()=>{if(!db){setReady(true);return}db.auth.getUser().then(({data})=>{setUser(data.user);setReady(true)});const {data:{subscription}}=db.auth.onAuthStateChange((event,session)=>{if(event==='PASSWORD_RECOVERY')setRecovery(true);setUser(session?.user||null)});return()=>subscription.unsubscribe()},[]);
@@ -82,7 +83,8 @@ export default function Home(){
    const result=await response.json();if(!response.ok)throw Error(result.error||'Garmin sync failed');
    const {data:activities,error:err}=await db.from('activities').select('id,started_at,name,distance_m,duration_s,avg_hr,elevation_gain_m,source,source_activity_id').order('started_at',{ascending:false}).limit(100);
    if(err)throw Error(err.message);setRuns((activities||[]) as Activity[]);
-   setSyncNotice('Garmin sync complete: '+result.imported+' imported, '+result.skipped+' already present. Scroll down to Activities.');
+   setVo2Refresh(v=>v+1);
+   setSyncNotice('Garmin sync complete: '+result.imported+' imported, '+result.skipped+' already present. VO₂max readings saved: '+(result.vo2maxSaved||0)+(result.vo2maxAvailableInResponse?' (Garmin metric found).':' (not included in Garmin activity response).'));
   }catch(ex){setSyncNotice('');setSyncError(ex instanceof Error?ex.message:'Garmin sync failed')}finally{setBusy(false)}
  }
  const pageSize=5,totalPages=Math.max(1,Math.ceil(runs.length/pageSize)),currentPage=Math.min(activityPage,totalPages),visibleRuns=runs.slice((currentPage-1)*pageSize,currentPage*pageSize);
@@ -108,7 +110,7 @@ export default function Home(){
  <p className="hint">Splits shown here are Garmin lap records, which may not be exactly 1 km. Lap charts use lap averages, not second-by-second time series. GPS routes are planned after validating detailed record access.</p>
  </section>}
  <PerformanceTrends runs={runs}/>
- {user&&<Vo2maxTracker userId={user.id}/>}
+ {user&&<Vo2maxTracker key={vo2Refresh} userId={user.id}/>}
  <section className="card top"><h2>Training profile</h2><div className="form"><label>Operational LTHR (bpm)<input type="number" min="100" max="230" value={lthr} onChange={e=>setLthr(Number(e.target.value))}/></label><button onClick={saveLthr}>Save LTHR</button></div><p className="hint">Effective-dated threshold history and advanced analytics are planned for a later phase.</p></section>
  <section className="card top"><h2>Development Roadmap</h2><p className="hint">Live feature status. Released means code is deployed; Garmin FIT imports and analytics still require testing with real activity files.</p><div style={{display:'grid',gap:12}}>
 {([{name:'Private login, dashboard and manual activities',status:'Released'},{name:'FIT import and lap/split storage',status:'Released'},{name:'Lap charts: pace, HR, cadence, power',status:'Released'},{name:'Workout Intelligence: type, pattern and manual correction',status:'Released'},{name:'Performance Insights: lap analysis and training focus',status:'Released'},{name:'VO₂max Tracker: manual readings and historical chart',status:'Released'},{name:'Performance Trends: weekly mileage and easy-run comparisons',status:'Released'},{name:'LTHR-based lap HR classification',status:'Released'},{name:'FIT per-record time series and GPS',status:'Planned'},{name:'Aerobic efficiency and true time-in-zone',status:'Planned'},{name:'Race predictor',status:'Planned'},{name:'Training journal',status:'Planned'},{name:'Hybrid AI Running Coach',status:'Planned'},{name:'Strava integration',status:'Planned'},{name:'Garmin sync (API configuration and validation)',status:'In progress'}] as {name:string;status:string}[]).map(item=><div key={item.name} style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:12,borderBottom:'1px solid #334155',paddingBottom:10}}><span>{item.name}</span><span className="pill" style={{whiteSpace:'nowrap',color:item.status==='Released'?'#86efac':item.status==='In progress'?'#fde68a':'#94a3b8'}}>{item.status}</span></div>)}</div></section></>}
